@@ -6,7 +6,7 @@ output: pdf_document
 ---
 
 ```{r, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE, error= FALSE, message=FALSE)
 ```
 
 # 1. Introduction
@@ -208,18 +208,51 @@ edx %>%
 
 
 #3. Modelling with Least Square Error and Regularization
-## Naive Models
+## 3.1. Creating training and test set
+We will first construct a train and test set to avoid overfitting due to the use of validation dataset. The use of validation dataset will be only at the last during final model evaluation.
 
-We will first construct a naive model by giving the same predictions for all of the movies in the validation dataset which is the average of all the movie ratings. 
-First we calculate the mean of the ratings given using the following code, it can be seen that the mean is 3.512465 which means that all of the future movie will be predicted to have a rating of 3.512465.
+Before splitting edx dataset into train and test set, first we will create a new feature which is release year and release month of the movie. The release year will be subtracted by 1994 to make a much smaller mean much more suitable with the model. Also because dataset starts collecting data of movies from 1995 so the minimum value for this 'year' feature will be 1. The 'month' feature is simply which month of the year when the movie is released.
+
+```{r, echo=T, results='hide'}
+edx<-edx%>%
+  mutate(year=year(as.POSIXct(timestamp,origin='1970-01-01'))-1994,
+         month=month(as.POSIXct(timestamp,origin='1970-01-01')))
+validation<-validation%>%
+  mutate(year=year(as.POSIXct(timestamp,origin='1970-01-01'))-1994,
+         month=month(as.POSIXct(timestamp,origin='1970-01-01')))
+```
+
+Then we split the edx dataset with 8:2 ratio for train and test set. so now `train_set` and `test_set` is obtained.
+```{r, include=FALSE}
+set.seed(1, sample.kind="Rounding")
+test_index <- createDataPartition(y = edx$rating, times = 1, p = 0.2, list = FALSE)
+train_set <- edx[-test_index,]
+temp <- edx[test_index,]
+
+# Make sure userId, movieId, year, and movie in validation set are also in edx set
+test_set <- temp %>% 
+  semi_join(train_set, by = "movieId") %>%
+  semi_join(train_set, by = "userId") %>%
+  semi_join(train_set, by = "year") %>%
+  semi_join(train_set, by = "month")
+
+removed <- anti_join(temp, test_set)
+train_set <- rbind(train_set, removed)
+rm(removed,temp,test_index)
+```
+
+## 3.2. Naive Models
+
+We will first construct a naive model by giving the same predictions for all of the movies in the test set which is the average of all the movie ratings. 
+First we calculate the mean of the ratings given using the following code, it can be seen that the mean is 3.512478 which means that all of the future movie will be predicted to have a rating of 3.512478.
 ```{r, echo=TRUE}
-mu <- mean(edx$rating)
+mu <- mean(train_set$rating)
 mu
 ```
 
-This average of the movie rating will also be used in further models as a baseline model. The following RMSE is obtained for the validation dataset
+This average of the movie rating will also be used in further models as a baseline model. The following RMSE is obtained for the test set
 ```{r, echo=TRUE}
-naive_rmse <- RMSE(validation$rating, mu)
+naive_rmse <- RMSE(test_set$rating, mu)
 naive_rmse
 ```
 
@@ -232,11 +265,11 @@ rmse_results %>% knitr::kable()
 ```
 
 
-## Movie Effect Models
+## 3.3. Movie Effect Models
 
 Now we will try to take into account the effect of movie in the model. since the it is logical that every movie will have its own unique rating, we will now give a movie effect parameter denoted by $b_i$ or b_i in the code. $b_i$ can be obtained by getting the average of subtracting every rating received in a movie by the mean which is the 3.15 in the previous naive model.
 ```{r, echo=T, results='hide', warning=FALSE, message=FALSE}
-movie_avgs <- edx %>%
+movie_avgs <- train_set %>%
   group_by(movieId) %>%
   summarize(b_i = mean(rating - mu))
 ```
@@ -249,16 +282,16 @@ movie_avgs %>% ggplot(aes(b_i))+geom_histogram(bins=25,color="grey")+
   ggtitle("Number of Movies For Every Computed b_i")+theme_light()
 ```
 
-Now, Prediction are done by adding the mean with the b_i corresponding to the movieID in validation dataset. Then RMSE will also be calculated to indicate the performance of the model.
+Now, Prediction are done by adding the mean with the b_i corresponding to the movieID in test set. Then RMSE will also be calculated to indicate the performance of the model.
 ```{r, echo=TRUE}
-predicted_ratings_1 <- mu +  validation %>%
+predicted_ratings_1 <- mu +  test_set %>%
   left_join(movie_avgs, by='movieId') %>%
   pull(b_i)
-model_1_rmse <- RMSE(predicted_ratings_1, validation$rating)
+model_1_rmse <- RMSE(predicted_ratings_1, test_set$rating)
 ```
 
 
-The following code is used to add the current model's RMSE in the table previously created. This same code will also be applied for the future model. From the result obtained, we can see that RMSE obtained decreased from the initial value of larger than 1 to less than 1 which is 0.944.
+The following code is used to add the current model's RMSE in the table previously created. This same code will also be applied for the future model. From the result obtained, we can see that RMSE obtained decreased from the initial value of larger than 1 to less than 1 which is 0.9437.
 ```{r, echo=TRUE}
 rmse_results <- bind_rows(rmse_results,
                           data_frame(method="Movie effect model",  
@@ -266,11 +299,11 @@ rmse_results <- bind_rows(rmse_results,
 rmse_results %>% knitr::kable()
 ```
 
-## Movie and user effect model
+## 3.4. Movie and user effect model
 
-Continuing with the previous idea, now we can see that besides movies, every users also have different tendencies on giving movie ratings. Some users like to give high ratings to any movies while other may be very objective and nitpicky in giving ratings. Due to this, in this model we are going to add an additional user effect denoted by $b_u$ or b_u to the previously movie effect model. First, we can see the distribution of the computed $b_u$. The plot constructed are based on users that has already rated more than 100 movies to prevent any outliers or bias in the plot. It can be seen below that the distribution of computed b_u is similar to normal distribution
+Continuing with the previous idea, now we can see that besides movies, every users also have different tendencies on giving movie ratings. Some users like to give high ratings to any movies while other may be very objective and nitpicky in giving ratings. Due to this, in this model we are going to add an additional user effect denoted by $b_u$ or b_u to the previously movie effect model. First, we can see the distribution of the computed $b_u$. The plot constructed are based on users that has already rated more than 100 movies to prevent any outliers or bias in the plot. It can be seen below that the distribution of computed b_u is similar to normal distribution (not skewed)
 ```{r, fig.align='center', echo=FALSE, comment='', out.height = '40%'}
-edx %>% 
+train_set %>% 
   left_join(movie_avgs, by='movieId') %>%
   group_by(userId) %>%
   filter(n() >= 100) %>%
@@ -282,15 +315,15 @@ edx %>%
 
 Then we compute the value $b_u$ for all users
 ```{r, echo=T, results='hide', warning=FALSE, message=FALSE}
-user_avgs <- edx %>%
+user_avgs <- train_set %>%
   left_join(movie_avgs, by='movieId') %>%
   group_by(userId) %>%
   summarize(b_u = mean(rating - mu - b_i))
 ```
 
-Prediction are done by adding the mean with the $b_i$ corresponding to the movieID and $b_u$ corresponding to the userID in validation dataset
+Prediction are done by adding the mean with the $b_i$ corresponding to the movieID and $b_u$ corresponding to the userID in test set
 ```{r, echo=TRUE}
-predicted_ratings_2 <- validation%>%
+predicted_ratings_2 <- test_set%>%
   left_join(movie_avgs, by='movieId') %>%
   left_join(user_avgs, by='userId') %>%
   mutate(pred = mu + b_i + b_u) %>%
@@ -299,15 +332,81 @@ predicted_ratings_2 <- validation%>%
 
 The following table shows that there is an improvement from the previous model since the RMSE obtained become better with the value 0.865
 ```{r, include=TRUE, echo=FALSE}
-model_2_rmse <- RMSE(predicted_ratings_2, validation$rating)
+model_2_rmse <- RMSE(predicted_ratings_2, test_set$rating)
 rmse_results <- bind_rows(rmse_results,
-                          data_frame(method="Movie and user effect model",  
+                          data_frame(method="Movie and user effect model",
                                      RMSE = model_2_rmse))
-
 rmse_results %>% knitr::kable()
 ```
 
-## Regularized movie effect model 
+## 3.5. Movie, User, and Year Release effect model
+
+By using similar approach as previous models, now the release year will also be taken into account to also see whether there are any effect to the rating depending on what year the movie is released. Due to this, in this model we are going to add an additional year effect denoted by $b_y$ or b_y to the previous model.
+
+```{r, echo=T, results='hide', warning=FALSE, message=FALSE}
+year_avgs <- train_set %>%
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId')%>%
+  group_by(year) %>%
+  summarize(b_y = mean(rating - mu - b_i - b_u))
+```
+
+Prediction are done by adding the mean with the $b_i$ corresponding to the movieID, $b_u$ corresponding to the userID, and $b_y$ corresponding to the year in test set
+
+```{r, echo=TRUE}
+predicted_ratings_3 <- test_set%>%
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId') %>%
+  left_join(year_avgs,by='year')%>%
+  mutate(pred = mu + b_i + b_u + b_y) %>%
+  pull(pred)
+```
+
+The following table shows that there is a very slight improvement from the previous model since the RMSE obtained become better with the decrease of 0.000003. This might also imply that release year might actually has an effect to the rating a movie has.
+```{r, include=TRUE, echo=FALSE}
+model_3_rmse <- RMSE(predicted_ratings_3, test_set$rating)
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Movie, user, year effect model",
+                                     RMSE = model_3_rmse))
+rmse_results %>% knitr::kable()
+```
+
+## 3.6. Movie, User, Year, and Month Release effect model
+
+Since there is a possibility that release year might have an effect to movie rating, we are also going to try to add an additional effect which is the month when the movie is release. An additional month effect denoted by $b_m$ or b_m to the previous model.
+
+```{r, echo=T, results='hide', warning=FALSE, message=FALSE}
+month_avgs <- train_set %>%
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId')%>%
+  left_join(year_avgs, by='year')%>%
+  group_by(month)%>%
+  summarize(b_m = mean(rating - mu - b_i - b_u - b_y))
+```
+
+Prediction are done by adding the mean with the $b_i$ corresponding to the movieID, $b_u$ corresponding to the userID, $b_y$ corresponding to the year, and $b_m$ corresponding to the month in test set
+
+```{r, echo=TRUE}
+predicted_ratings_4 <- test_set%>%
+  left_join(movie_avgs, by='movieId') %>%
+  left_join(user_avgs, by='userId') %>%
+  left_join(year_avgs,by='year')%>%
+  left_join(month_avgs, by='month')%>%
+  mutate(pred = mu + b_i + b_u + b_y + b_m) %>%
+  pull(pred)
+```
+
+The following table shows that there is another very slight improvement from the previous model since the RMSE obtained become better with the decrease of similar amount as the previous addition which is 0.000003. This might also imply that release month might actually has an effect to the rating a movie has.
+```{r, include=TRUE, echo=FALSE}
+model_4_rmse <- RMSE(predicted_ratings_4, test_set$rating)
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Movie, user, year, month effect model",
+                                     RMSE = model_4_rmse))
+rmse_results %>% knitr::kable()
+```
+
+
+## 3.7. Regularized movie effect model 
 
 Now we are going to see that there are bias caused by small amount of observation in a group, in this case small amount of ratings given to a movie and small amount of ratings done by a user would cause a bias and hence affecting the performance of the model. Due to this, we will add a regularization parameter that gives a big change (commonly known as penalty) if the amount of observation is smaller and will give small to no change as the number of observations increase indefinitely.
 
@@ -316,20 +415,20 @@ To observe this change, we will now add a regularization to the previously creat
 lambdas <- seq(0, 10, 0.25)
 ```
 
-Then we will do a cross validation for each value of $\lambda$. first $b_i$ will be computed by using the now modified formula of least square error with the additional $\lambda$, then the predicted ratings for the validation dataset is also calculated with similar approach in previous models. The $\lambda$ value that will be chosen is the value that minimizes RMSE.
+Then we will do a cross validation for each value of $\lambda$. first $b_i$ will be computed by using the now modified formula of least square error with the additional $\lambda$, then the predicted ratings for the test set is also calculated with similar approach in previous models. The $\lambda$ value that will be chosen is the value that minimizes RMSE.
 
 ```{r, echo=T, results='hide', warning=FALSE, message=FALSE}
 rmses_bi <- sapply(lambdas, function(l){
-  b_i <- edx %>% 
-    group_by(movieId) %>% 
-    summarize(b_i = sum(rating - mu)/(n()+l))
-  
-  predicted_ratings<-validation%>%
+  b_i <- train_set %>% 
+  group_by(movieId) %>% 
+  summarize(b_i = sum(rating - mu)/(n()+l))
+    
+  predicted_ratings<-test_set%>%
     left_join(b_i, by='movieId') %>% 
     mutate(pred = mu + b_i) %>%
     .$pred
-  return(RMSE(predicted_ratings, validation$rating))
-})
+  return(RMSE(predicted_ratings, test_set$rating))
+  })
 ```
 
 using the plot below it can be seen that the lambda that returns the smallest RMSE is around 2.5 and when calculated exactly it will also produce the value 2.5
@@ -342,7 +441,7 @@ qplot(lambdas, rmses_bi,ylab="RMSE",xlab="Lambda",
 lambdas[which.min(rmses_bi)]
 ```
 
-Adding this results with the previous results shows that the RMSE obtained is not better then the movie and user effect model, however it has a small improvement from the initial movie effect model.
+Adding this results with the previous results shows that the RMSE obtained is not better then the last model, however it has a small improvement from the initial movie effect model.
 ```{r, echo=T, results='hide', warning=FALSE, message=FALSE}
 rmse_results <- bind_rows(rmse_results,
                           data_frame(method="Regularized movie effect model",  
@@ -352,58 +451,155 @@ rmse_results <- bind_rows(rmse_results,
 rmse_results %>% knitr::kable()
 ```
 
-## Regularized Movie and User Effect Model
+## 3.8. Regularized Movie and User Effect Model
 
 Following the previous regularized model, next the movie and user effect model will also be regularized by first finding the best $\lambda$ value from the same set of candidates as before.
 ```{r, echo=T, results='hide', warning=FALSE, message=FALSE}
-rmses_bi_bu <- sapply(lambdas, function(l){
-  b_i <- edx %>% 
+rmses_bu <- sapply(lambdas, function(l){
+  b_i <- train_set %>% 
     group_by(movieId) %>%
     summarize(b_i = sum(rating - mu)/(n()+l))
-  
-  b_u <- edx %>% 
+    
+  b_u <- train_set %>% 
     left_join(b_i, by="movieId") %>% group_by(userId) %>%
     summarize(b_u = sum(rating - b_i - mu)/(n()+l))
-  
+    
   predicted_ratings <- 
-    validation %>% 
+    test_set %>% 
     left_join(b_i, by = "movieId") %>%
     left_join(b_u, by = "userId") %>%
     mutate(pred = mu + b_i + b_u) %>%
     pull(pred)
-  
-  return(RMSE(predicted_ratings, validation$rating))
+    
+  return(RMSE(predicted_ratings, test_set$rating))
 })
 ```
 
-The results in the plot below shows that the $\lambda$ that returns the smallest RMSE is aroung 5, and it can be checked that the exact amount for $\lambda$ is 5.25
+The results in the plot below shows that the $\lambda$ that returns the smallest RMSE is around 5, and it can be checked that the exact amount for $\lambda$ is 4.75
 ```{r, fig.align='center', echo=FALSE, comment='', out.height = '40%'}
-qplot(lambdas, rmses_bi_bu,ylab="RMSE",xlab="Lambda",
+qplot(lambdas, rmses_bu,ylab="RMSE",xlab="Lambda",
       main="RMSEs of Regularized Movie and User Effect Model")  
 ```
 
 ```{r, include=TRUE, echo=FALSE}
-lambdas[which.min(rmses_bi_bu)]
-
+lambdas[which.min(rmses_bu)]
+                                                           
 rmse_results <- bind_rows(rmse_results,
                           data_frame(method="Regularized movie and user effect model",  
-                                     RMSE = min(rmses_bi_bu)))
+                                      RMSE = min(rmses_bu)))
 ```
 
-In the result in table below we can see that there is a slight improvement compared to the last model and user effect model.
+In the result in table below we can see that there is a slight improvement compared unregularized movie and user effect model and it even already outperforms the unregularized model using movie, user, year, and month release effect.
 ```{r, include=TRUE, echo=FALSE}
 rmse_results %>% knitr::kable()
 ```
 
-# Results
+## 3.9. Regularized Movie, User, Year, and Month Effect Model
 
-The table below shows the final result of RMSE from different kind of models used to predict movie ratings
+Following the previous regularized model, next we will regularize the final model that adds both year release and month release. The model with only the addition of year release is not going to be focused here since there is only a slight improvement in the unregularized model. Therefore we are just going to look at the addition of both of the effects at the same time. This model will also be regularized by first finding the best $\lambda$ value from the same set of candidates as before.
+```{r, echo=T, results='hide', warning=FALSE, message=FALSE}
+rmses_fin <- sapply(lambdas, function(l){
+  b_i <- train_set %>% 
+    group_by(movieId) %>%
+    summarize(b_i = sum(rating - mu)/(n()+l))
+  
+  b_u <- train_set %>% 
+    left_join(b_i, by="movieId") %>% group_by(userId) %>%
+    summarize(b_u = sum(rating - b_i - mu)/(n()+l))
+  
+  b_y <- train_set %>% 
+    left_join(b_i, by="movieId") %>% left_join(b_u, by="userId") %>%
+    group_by(year) %>% summarize(b_y = sum(rating - mu - b_i - b_u)/(n()+l))
+  
+  b_m <- train_set %>% 
+    left_join(b_i, by="movieId") %>% left_join(b_u, by="userId") %>%
+    left_join(b_y, by="year") %>% group_by(month) %>%
+    summarize(b_m = sum(rating - mu - b_i - b_u - b_y)/(n()+l))
+  
+  predicted_ratings <- 
+    test_set %>% 
+    left_join(b_i, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    left_join(b_y, by = "year") %>%
+    left_join(b_m, by = "month") %>%
+    mutate(pred = mu + b_i + b_u + b_y + b_m) %>%
+    pull(pred)
+  
+  return(RMSE(predicted_ratings, test_set$rating))
+})
+```
+
+The results if it is plotted shows that the $\lambda$ that returns the smallest RMSE is around 5, and it can be checked that the exact amount for $\lambda$ is also 5
+```{r, fig.align='center', echo=FALSE, comment='', out.height = '40%'}
+qplot(lambdas, rmses_fin,ylab="RMSE",xlab="Lambda",
+      main="RMSEs of Regularized Movie, User, year, and month Effect Model") 
+```
+
+```{r, include=TRUE, echo=FALSE}
+lambdas[which.min(rmses_fin)]
+
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Regularized Movie, User, year, and month Effect Model",  
+                                     RMSE = min(rmses_fin)))
+```
+
+In the result in table below we can see that there is a slight improvement compared to unregularized final model and also compared to the last regularized model. Due to that, we are going to use this model to predict the ratings in validation dataset
 ```{r, include=TRUE, echo=FALSE}
 rmse_results %>% knitr::kable()
 ```
-From the table, it is clear that as we increase the amount of effect used to explain the model, the RMSE will also decrease indicating a better performance. This is because there might be less error and the model having more capabilities to express the real observations. Then, we can conclude that the best model that can be used to predict movie ratings is the regularized movie and user effect with RMSE 0.8648170. 
 
-However it is also advised to conduct a further observation whether the regularized movie and user effect do perform better than the normal movie and user effect. This is due to the relatively small difference between the RMSE of the two model (around 0.0005), which might not be that significant than 0. The significance of this difference needs to be checked by using statistical testing between two means.
+## 3.10. Final Result
+
+We are generating a final model which taking into account the effect of movie ID, User ID, year of release, and month of release. We will also use the $\lambda$ that we obtained in the previous training process which is 5. The training part of the model used the edx dataset while evaluation used validation dataset.
+
+```{r, echo=T, results='hide', warning=FALSE, message=FALSE}
+b_i <- edx %>% 
+  group_by(movieId) %>%
+  summarize(b_i = sum(rating - mu)/(n()+5))
+
+b_u <- edx %>% 
+  left_join(b_i, by="movieId") %>% group_by(userId) %>%
+  summarize(b_u = sum(rating - b_i - mu)/(n()+5))
+
+b_y <- edx %>% 
+  left_join(b_i, by="movieId") %>% left_join(b_u, by="userId") %>%
+  group_by(year) %>% summarize(b_y = sum(rating - mu - b_i - b_u)/(n()+5))
+
+b_m <- edx %>% 
+  left_join(b_i, by="movieId") %>% left_join(b_u, by="userId") %>%
+  left_join(b_y, by="year") %>% group_by(month) %>%
+  summarize(b_m = sum(rating - mu - b_i - b_u - b_y)/(n()+5))
+
+prediction_ratings_fin <- 
+  validation %>% 
+  left_join(b_i, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%
+  left_join(b_y, by = "year") %>%
+  left_join(b_m, by = "month") %>%
+  mutate(pred = mu + b_i + b_u + b_y + b_m) %>%
+  pull(pred)
+```
+
+```{r, include=FALSE}
+model_fin_rmse<-RMSE(prediction_ratings_fin,validation$rating)
+
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Final model on validation dataset",
+                                     RMSE = model_fin_rmse))
+```
+
+# 4. Conclusion
+## 4.1. Conclusion
+The table below shows the final result of RMSE from different kind of models used to predict movie ratings and also the final result which used the best model, edx dataset as a training set, and validation dataset to evaluate the performance of the model.
+```{r, include=TRUE, echo=FALSE}
+rmse_results %>% knitr::kable()
+```
+From the table, it is clear that as we increase the amount of effect used to explain the model, the RMSE will also decrease indicating a better performance. This is because there might be less error and the model having more capabilities to express the real observations. Then, we can conclude that the best model that can be used to predict movie ratings is the regularized movie, user, year, and month effect with RMSE 0.8652220. 
+
+The final RMSE result we obtained by using the chosen model is even better with a further decrease of 0.00043 resulting an RMSE of 0.8647951. This indicated that out model do not overfit with the `train_set` and `test_set` and can perform well with unseen data.
+
+## 4.2. Future Work
+Further analysis that could be done is by performing statistical testing to determine whether the addition of year release and month release give a significant difference to the performance of the previous models or not. Future approach that also could be done is to try other algorithms such as matrix factorization or recommenderlab that is readily available. In this project, this approach is slighlty not possible due to machine limitations.
 
 # Appendix
 ```{r, include=TRUE, echo=FALSE}
